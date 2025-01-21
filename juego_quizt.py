@@ -2,18 +2,24 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 import pandas as pd
 import random
-import time
-import threading
 
 class QuizApp:
     def __init__(self, master):
+        """
+        Inicializa la aplicación del quiz de Harry Potter.
+        
+        :param master: La ventana principal de Tkinter.
+        """
         self.master = master
         self.master.title("Harry Potter Quiz")
         self.score = 0
-        self.questions_asked = set()  # Ahora es un set de tuplas
+        self.questions_asked = set()  # Almacena preguntas ya hechas como tuplas
         self.current_question = None
         self.player_name = None
-        self.timer_running = False  # Nuevo atributo para controlar el estado del temporizador
+        self.timer_running = False  # Controla si el temporizador está en ejecución
+        self.option_buttons = []  # Inicializamos option_buttons aquí para asegurar que siempre exista
+        self.time_label = None  # Inicializamos time_label para controlar un solo temporizador
+        self.question_counter = 0  # Contador de preguntas
 
         # Cargar preguntas desde Excel
         self.questions = self.load_questions_from_excel('questions.xlsx')
@@ -27,10 +33,56 @@ class QuizApp:
         self.ranking_button = tk.Button(master, text="Ranking", command=self.show_ranking)
         self.ranking_button.pack(pady=5)
 
-    # ... (métodos load_questions_from_excel, get_player_name, start_quiz iguales)
+    def load_questions_from_excel(self, filename):
+        """
+        Carga las preguntas desde un archivo Excel.
+
+        :param filename: El nombre del archivo Excel con las preguntas.
+        :return: Lista de diccionarios con información de cada pregunta.
+        """
+        try:
+            df = pd.read_excel(filename)
+            questions = []
+            for _, row in df.iterrows():
+                questions.append({
+                    "question": row['Question'],
+                    "options": [row['Option1'], row['Option2'], row['Option3']],
+                    "correct": row['CorrectAnswer']
+                })
+            return questions
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al cargar preguntas: {e}")
+            return []
+
+    def get_player_name(self):
+        """
+        Solicita el nombre del jugador para iniciar el juego.
+        """
+        self.player_name = simpledialog.askstring("Nombre del Jugador", "Por favor, introduce tu seudónimo:")
+        if self.player_name:
+            self.start_quiz()
+        else:
+            messagebox.showwarning("Nombre Requerido", "Debes proporcionar un seudónimo para jugar.")
+
+    def start_quiz(self):
+        """
+        Inicia el quiz, ocultando los botones de inicio y ranking.
+        """
+        self.label.config(text="")
+        self.start_button.pack_forget()
+        self.ranking_button.pack_forget()
+        self.score = 0
+        self.questions_asked.clear()
+        self.question_counter = 0
+        self.ask_question()
 
     def ask_question(self):
-        if len(self.questions_asked) >= 10:
+        """
+        Presenta una nueva pregunta al jugador, gestionando el temporizador y las respuestas.
+        Este método asegura que los botones de opción siempre están presentes y actualizados para cada pregunta.
+        """
+        self.question_counter += 1
+        if self.question_counter > 10:
             self.end_game()
             return
 
@@ -41,72 +93,94 @@ class QuizApp:
                 break
         self.questions_asked.add(question_tuple)
 
-        self.label.config(text=self.current_question["question"])
+        self.label.config(text=f"Pregunta {self.question_counter}/10: {self.current_question['question']}")
         
-        if not hasattr(self, 'option_buttons'):
-            self.option_buttons = []
-            for i in range(3):
-                button = tk.Button(self.master, command=lambda i=i: self.check_answer(self.current_question["options"][i]))
-                self.option_buttons.append(button)
-                button.pack(pady=5)
+        # Asegúrate de que los botones de opción existen para cada pregunta
+        for button in self.option_buttons:
+            button.pack_forget()
+        self.option_buttons.clear()
 
-        for button, option in zip(self.option_buttons, self.current_question["options"]):
-            button.config(text=option, bg='white')
+        for i, option in enumerate(self.current_question["options"]):
+            button = tk.Button(self.master, text=option, bg='white', command=lambda opt=option: self.check_answer(opt))
+            button.pack(pady=5)
+            self.option_buttons.append(button)
 
-        if hasattr(self, 'countdown_thread') and self.countdown_thread.is_alive():
-            self.timer_running = False  # Esto detiene el temporizador
-            self.countdown_thread.join()  # Espera a que termine el hilo anterior
-
+        # Inicia el temporizador sin usar threading, asegurando que solo haya un contador
+        if self.time_label:
+            self.time_label.pack_forget()
         self.timer = 30
         self.time_label = tk.Label(self.master, text=f"Tiempo restante: {self.timer}")
         self.time_label.pack()
         self.start_countdown()
 
     def start_countdown(self):
+        """
+        Inicia el temporizador para la pregunta actual usando `after` para actualizaciones.
+        """
         self.timer_running = True
-        self.countdown_thread = threading.Thread(target=self.countdown)
-        self.countdown_thread.start()
+        self.countdown()
 
     def countdown(self):
-        for remaining in range(self.timer, 0, -1):
-            if not self.timer_running:
-                return
-            time.sleep(1)
-            self.master.after(0, lambda r=remaining: self.time_label.config(text=f"Tiempo restante: {r}"))
+        """
+        Maneja la cuenta regresiva del temporizador de la pregunta, usando únicamente `after` para ser thread-safe.
+        Este método asegura que el temporizador mantenga una velocidad constante.
+        """
         if self.timer_running:
-            self.master.after(0, self.check_answer, None)  # Tiempo agotado
-        self.timer_running = False
+            if self.timer > 0:
+                self.timer -= 1
+                self.time_label.config(text=f"Tiempo restante: {self.timer}")
+                self.master.after(1000, self.countdown)  # Mantiene la velocidad constante con 1000 ms por iteración
+            else:
+                self.timer_running = False
+                self.check_answer(None)  # Tiempo agotado
 
     def check_answer(self, answer):
-        if hasattr(self, 'countdown_thread') and self.countdown_thread.is_alive():
-            self.timer_running = False  # Esto detiene el temporizador
-            self.countdown_thread.join()  # Asegura que el hilo termine antes de proceder
+        """
+        Verifica la respuesta del jugador y gestiona el puntaje.
 
-        for button in self.option_buttons:
-            button.pack_forget()
-        self.time_label.pack_forget()
+        :param answer: La respuesta seleccionada por el jugador o None si el tiempo expiró.
+        """
+        try:
+            # Asegura que todos los botones sean olvidados para evitar duplicados
+            for button in self.option_buttons:
+                button.pack_forget()
+            self.time_label.pack_forget()
 
-        if answer == self.current_question["correct"]:
-            points = self.timer if self.timer > 0 else 0
-            self.score += points
-            messagebox.showinfo("Correcto", f"¡Correcto! Ganaste {points} puntos.")
-            self.label.config(fg='green')  # Visual feedback
-        else:
-            messagebox.showinfo("Incorrecto", f"Incorrecto. La respuesta correcta era: {self.current_question['correct']}")
-            self.label.config(fg='red')    # Visual feedback
+            if answer == self.current_question["correct"]:
+                points = self.timer if self.timer > 0 else 0
+                self.score += points
+                messagebox.showinfo("Correcto", f"¡Correcto! Ganaste {points} puntos.")
+                self.label.config(fg='green')  # Visual feedback
+            else:
+                messagebox.showinfo("Incorrecto", f"Incorrecto. La respuesta correcta era: {self.current_question['correct']}")
+                self.label.config(fg='red')    # Visual feedback
 
-        self.label.config(fg='black')  # Reset color
-        if len(self.questions_asked) < 10:
-            self.ask_question()
-        else:
-            self.end_game()
+            self.label.config(fg='black')  # Reset color
+            self.timer_running = False  # Aseguramos que el temporizador esté detenido
+            if self.question_counter < 10:
+                self.ask_question()
+            else:
+                self.end_game()
+        except Exception as e:
+            messagebox.showerror("Error", f"Un error ocurrió durante la verificación de la respuesta: {e}")
 
     def end_game(self):
+        """
+        Termina el juego, muestra el puntaje, guarda en el ranking y vuelve a la pantalla inicial.
+        """
         messagebox.showinfo("Fin del Juego", f"Juego terminado. Tu puntuación final es: {self.score}")
-        self.save_score_to_ranking()  # Mover aquí para guardar solo cuando se completen todas las preguntas
-        self.master.quit()
+        self.save_score_to_ranking()  # Guarda solo cuando se completen todas las preguntas
+        
+        # Vuelve a la pantalla inicial
+        self.label.config(text="Bienvenido al Quiz de Harry Potter!")
+        self.start_button.pack(pady=5)
+        self.ranking_button.pack(pady=5)
+        self.player_name = None  # Reset para el siguiente jugador
 
     def save_score_to_ranking(self):
+        """
+        Guarda la puntuación del jugador en el archivo de ranking.
+        """
         try:
             df = pd.read_excel('ranking.xlsx')
         except FileNotFoundError:
@@ -125,6 +199,9 @@ class QuizApp:
             messagebox.showerror("Error", f"No se pudo guardar el ranking: {e}")
 
     def show_ranking(self):
+        """
+        Muestra el ranking actual de jugadores.
+        """
         try:
             df = pd.read_excel('ranking.xlsx')
             if df.empty:
@@ -135,6 +212,7 @@ class QuizApp:
         except FileNotFoundError:
             messagebox.showinfo("Ranking", "No hay puntuaciones en el ranking todavía.")
 
+# Inicialización de la aplicación
 root = tk.Tk()
 app = QuizApp(root)
 root.mainloop()
